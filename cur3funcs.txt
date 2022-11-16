@@ -1,0 +1,31 @@
+CREATE OR REPLACE FUNCTION number_of_opened_cases_by_employee(target_employee_id integer) RETURNS integer AS $$
+    BEGIN
+		select count(distinct case_id) as result from responsible_employee where employee_id = target_employee_id
+		and (select criminal_case.criminal_case_status 
+		from criminal_case where criminal_case.id = responsible_employee.case_id) = 'открыто';
+	END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION number_of_active_employees_by_department(target_department_id integer) RETURNS integer AS $$
+    BEGIN
+		select count(*) from employee where department_id = target_department_id
+		and employee.current_status = 'актуальный';
+	END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION suspect_rate_in_legal_org(target_org_id integer) RETURNS real AS $$
+    DECLARE
+	suspect_num integer;
+	member_num integer;
+	BEGIN
+	
+	suspect_num = (select count(*) from membership where membership.organization_id = target_org_id and 
+	(select observed_person.cathegory from observed_person where observed_person.id = membership.person_id) != 'добропорядочный гражданин');
+	
+	member_num = (select count(*) from membership where membership.organization_id = target_org_id);
+	
+	return suspect_num/member_num;
+	END;
+$$ LANGUAGE plpgsql;
