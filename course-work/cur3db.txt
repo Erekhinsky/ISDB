@@ -1,0 +1,822 @@
+drop table organization_activity;
+drop table person_activity;
+drop table person_case_participant;
+drop table person_case_witness;
+drop table organization_case_participant;
+drop table case_related_incident;
+drop table court_charges;
+drop table responsible_employee;
+drop table membership;
+drop table incident;
+drop table activity;
+drop table evidence;
+drop table organization;
+drop table observed_person;
+drop table criminal_case;
+drop table employee;
+drop table article;
+drop table employee_position;
+drop table department;
+
+drop type legality;
+drop type person_status;
+drop type sex;
+drop type completeness;
+drop type evidence_types;
+drop type employee_status;
+
+CREATE TABLE incident(
+	id serial PRIMARY KEY,
+	event_time TIMESTAMP NOT NULL,
+	place TEXT,
+	event_type varchar(200) NOT NULL, 
+	description TEXT NOT NULL,
+	access_lvl INTEGER NOT NULL,
+	check(access_lvl >= 0 and access_lvl <= 4)
+);
+
+create type legality as enum ('законная', 'незаконная', 'предосудительная');
+
+create table activity(
+	id serial primary key,
+	activity_type varchar(200) not null, 
+	cathegory legality not null,
+	description text not null
+);
+
+create type person_status as enum ('заключенный', 'в розыске', 'подозреваемый', 'член окружения', 'добропорядочный гражданин');
+
+create type sex as enum ('м', 'ж');
+
+create table observed_person(
+	id serial primary key,
+	cathegory person_status not null, 
+	person_name varchar(200),
+	person_alias varchar(200),
+	person_sex sex,
+	citizenship varchar(100),
+	passport varchar(20),
+	address text,
+	birth_date timestamp,
+	person_location text,
+	access_lvl integer not null,
+	check(access_lvl >= 0 and access_lvl <= 4)
+);
+
+create type completeness as enum ('открыто', 'закрыто');
+
+create table criminal_case(
+	id serial primary key,
+	case_name varchar(100),
+	description text,
+	criminal_case_status completeness not null,
+	access_lvl integer not null,
+	check(access_lvl >= 0 and access_lvl <= 4)
+);
+
+create type evidence_types as enum ('показания подозреваемого', 'показания обвиняемого', 'показания потерпевшего', 'показания свидетеля', 'заключение эксперта', 'вещественные доказательства', 'протоколы следственных действий', 'протоколы судебных заседаний', 'иные документы');
+
+create table evidence(
+	id serial primary key,
+	case_id integer references criminal_case(id) on delete restrict,
+	evidence_type evidence_types not null,
+	description text,
+	evidence_storage text,
+	access_lvl integer not null,
+	check(access_lvl >= 0 and access_lvl <= 4)
+);
+
+create table organization(
+	id serial primary key,
+	leader_id integer references observed_person(id) on delete restrict,
+	organization_name varchar(200) not null,
+	address text,
+	access_lvl integer not null,
+	check(access_lvl >= 0 and access_lvl <= 4)
+);
+
+create table employee_position(
+	id serial primary key,
+	position_name varchar(200) unique not null,
+	responsibilities text,
+	qualification text,
+	access_lvl integer not null,
+	check(access_lvl >= 0 and access_lvl <= 4)
+);
+
+create table department(
+	id serial primary key,
+	abbrev varchar(5) unique not null,
+	department_name varchar(100) not null,
+	description text
+);
+
+create type employee_status as enum ('актуальный', 'бывший');
+
+create table employee(
+	id serial primary key,
+	position_id integer references employee_position(id) on delete restrict,
+	department_id integer references department(id) on delete restrict,
+	employee_name varchar(100) not null,
+	passport varchar(20) unique not null,
+	current_status employee_status not null
+);
+
+create table article(
+	id serial primary key,
+	department_id integer references department(id) on delete restrict,
+	code varchar(200) not null,
+	article_number integer not null,
+	description text not null,
+	unique(code, article_number)
+);
+
+
+create table organization_activity(
+	organization_id integer references organization(id) on delete restrict,
+	activity_id integer references activity(id) on delete restrict
+);
+
+create table person_activity(
+	person_id integer references observed_person(id) on delete restrict,
+	activity_id integer references activity(id) on delete restrict
+);
+
+create table person_case_participant(
+	person_id integer references observed_person(id) on delete restrict,
+	case_id integer references criminal_case(id) on delete restrict
+);
+
+create table person_case_witness(
+	person_id integer references observed_person(id) on delete restrict,
+	case_id integer references criminal_case(id) on delete restrict
+);
+
+create table organization_case_participant(
+	organization_id integer references organization(id) on delete restrict,
+	case_id integer references criminal_case(id) on delete restrict
+);
+
+create table case_related_incident(
+	incident_id integer references incident(id) on delete restrict,
+	case_id integer references criminal_case(id) on delete restrict
+);
+
+create table court_charges(
+	article_id integer references article(id) on delete restrict,
+	case_id integer references criminal_case(id) on delete restrict
+);
+
+create table responsible_employee(
+	employee_id integer references employee(id) on delete restrict,
+	case_id integer references criminal_case(id) on delete restrict
+);
+
+create table membership(
+	organization_id integer references organization(id) on delete restrict,
+	person_id integer references observed_person(id) on delete restrict,
+	member_role varchar(200)
+);
+
+CREATE OR REPLACE FUNCTION get_employee_access_lvl(employee_id integer) returns integer AS $$
+	BEGIN
+		RETURN (SELECT access_lvl FROM employee_position WHERE id = (select position_id from employee where employee.id = employee_id));
+	END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION new_incident_case_lvl_chain() RETURNS trigger AS $$
+	DECLARE
+        new_case_access_lvl          integer;
+    BEGIN
+		new_case_access_lvl = (select incident.access_lvl from incident where incident.id = NEW.incident_id LIMIT 1);
+		IF (select criminal_case.access_lvl from criminal_case where criminal_case.id = NEW.case_id LIMIT 1) 
+			< new_case_access_lvl
+		THEN
+        	update criminal_case set access_lvl = new_case_access_lvl
+where id = new.case_id;
+    	END IF;
+	RETURN NEW;
+	END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER new_incident_case_lvl_chain_trig after INSERT ON case_related_incident
+    FOR EACH ROW EXECUTE FUNCTION new_incident_case_lvl_chain();
+
+
+CREATE OR REPLACE FUNCTION update_incident_case_lvl_chain() RETURNS trigger AS $$
+	DECLARE
+        new_case_access_lvl          integer;
+    BEGIN
+		
+if (new.access_lvl > old.access_lvl)
+then
+new_case_access_lvl = new.access_lvl;
+update criminal_case set access_lvl = new_case_access_lvl where (criminal_case.id in (select case_id from case_related_incident where incident_id = old.id)) and (criminal_case.access_lvl < new_case_access_lvl);
+
+end if;
+	
+	RETURN NEW;
+	END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER update_incident_case_lvl_chain_trig after UPDATE of access_lvl ON incident
+    FOR EACH ROW EXECUTE FUNCTION update_incident_case_lvl_chain();
+
+CREATE OR REPLACE FUNCTION delete_responsible_employees_with_low_access_lvl() RETURNS trigger AS $$
+	DECLARE
+        new_case_access_lvl          integer;
+    BEGIN
+		IF (NEW.access_lvl > old.access_lvl)
+		THEN
+        	
+			delete from responsible_employee 
+			where 
+			(case_id = NEW.id) 
+			and 
+			(get_employee_access_lvl(employee_id) < NEW.access_lvl);
+    	END IF;
+	RETURN NEW;
+	END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER delete_responsible_employees_with_low_access_lvl_trig after UPDATE of access_lvl ON criminal_case
+    FOR EACH ROW EXECUTE FUNCTION delete_responsible_employees_with_low_access_lvl();
+
+CREATE OR REPLACE FUNCTION get_abstract_by_department_id(selected_department_id integer) RETURNS integer AS $$
+    BEGIN
+		RETURN (SELECT employee.id FROM employee 
+				WHERE 
+					employee.department_id = selected_department_id
+				and
+					(select employee_position.position_name from employee_position 
+					 where 
+					 employee_position.id = employee.position_id) like '%абстракт%'
+			   LIMIT 1
+			   );
+	END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION get_head_by_department_id(selected_department_id integer) RETURNS integer AS $$
+    BEGIN
+		RETURN (SELECT employee.id FROM employee 
+				WHERE 
+					employee.department_id = selected_department_id
+				and
+					(select employee_position.position_name from employee_position 
+					 where 
+					 employee_position.id = employee.position_id) like '%начальник%'
+			and
+				employee.current_status = 'актуальный'
+			   LIMIT 1
+			   );
+	END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION article_case_department_responsibility_chain() RETURNS trigger AS $$
+	DECLARE
+        new_department_id          integer;
+		head_or_abstract_id          integer;
+    BEGIN
+		
+		new_department_id = (select article.department_id from article where article.id = new.article_id);
+		
+		IF 
+		NOT EXISTS(
+			select * from responsible_employee 
+			where 
+				(new.case_id = responsible_employee.case_id)
+			and
+				((select employee.department_id from employee 
+				where employee.id = responsible_employee.employee_id) = new_department_id)
+		) 
+		THEN
+        	
+			head_or_abstract_id = get_head_by_department_id(new_department_id);
+			
+			if head_or_abstract_id IS NULL
+			then
+				head_or_abstract_id = get_abstract_by_department_id(new_department_id);
+			END IF;
+			
+			insert into responsible_employee(employee_id, case_id)
+			values
+			(head_or_abstract_id, new.case_id);
+			
+    	END IF;
+	RETURN NEW;
+	END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER article_case_department_responsibility_chain_trig after INSERT ON court_charges
+    FOR EACH ROW EXECUTE FUNCTION article_case_department_responsibility_chain();
+
+CREATE OR REPLACE FUNCTION responsible_employee_candidate_evaluation() RETURNS trigger AS $$
+	DECLARE
+        candidate_position_name          text;
+	required_access_lvl      integer;
+	candidate_access_lvl      integer;
+	candidate_position_id      integer;
+    BEGIN	
+		candidate_position_id = (select employee.position_id from employee where employee.id = new.employee_id);
+		
+		candidate_position_name = (
+			select position_name from employee_position 
+			where 
+			id = candidate_position_id 
+		);
+		
+		
+		IF 
+		(candidate_position_name like '%начальник%') 
+		OR
+		(candidate_position_name like '%следователь%') 
+		OR
+		(candidate_position_name like '%спец. агент%') 
+		OR
+		(candidate_position_name like '%абстракт%') 
+		THEN
+        		candidate_access_lvl = (
+				select access_lvl from employee_position 
+				where 
+				id = candidate_position_id 
+			);
+			required_access_lvl = (select access_lvl from criminal_case
+				where 
+				id = new.case_id
+			);
+			if (required_access_lvl <= candidate_access_lvl)
+			then
+				RETURN NEW;
+			else
+				raise exception 'Higher access lvl required!';
+			end if;
+				
+    		END IF;
+	
+raise exception 'Inappropriate position to be responsinsible for a case!';
+RETURN NULL;
+	END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER responsible_employee_candidate_evaluation_trig before INSERT ON responsible_employee
+    FOR EACH ROW EXECUTE FUNCTION responsible_employee_candidate_evaluation();
+
+CREATE OR REPLACE FUNCTION employee_access_lvl_downgrade() RETURNS trigger AS $$
+	DECLARE
+		new_access_lvl          integer;
+		prev_access_lvl          integer;
+        employee_prev_position_name          text;
+		abstract_id          integer;
+    BEGIN
+		
+			new_access_lvl = (
+				select access_lvl from employee_position where id = new.position_id limit 1
+			);
+
+			prev_access_lvl = (
+				select access_lvl from employee_position where id = old.position_id limit 1
+			);
+
+			if (new_access_lvl < prev_access_lvl)
+			then
+
+				employee_prev_position_name = (
+					select position_name from employee_position 
+					where 
+					id = old.position_id
+				);
+
+				IF 
+				(employee_prev_position_name like '%начальник%')  
+				THEN
+					abstract_id = get_abstract_by_department_id(old.department_id);
+					update responsible_employee 
+					set
+						employee_id = abstract_id
+					where 
+						employee_id = new.id;
+
+				else
+					delete from responsible_employee 
+					where 
+						employee_id = new.id 
+					and 
+						(select criminal_case.access_lvl from criminal_case 
+						 where 
+						criminal_case.id = case_id) > new_access_lvl;
+				END IF;
+
+			END IF;
+		
+		
+	RETURN NEW;
+	END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER employee_access_lvl_downgrade_trig after UPDATE OF position_id ON employee
+    FOR EACH ROW 
+WHEN (OLD.position_id IS DISTINCT FROM NEW.position_id)
+EXECUTE FUNCTION employee_access_lvl_downgrade();
+
+CREATE OR REPLACE FUNCTION multiple_head_prevention() RETURNS trigger AS $$
+	DECLARE
+        new_employee_position_name          text;
+		existing_head_id          integer;
+		abstract_id          integer;
+    BEGIN
+		
+		new_employee_position_name = (
+			select position_name from employee_position 
+			where 
+			id = new.position_id
+			LIMIT 1
+		);
+
+		IF 
+		(new_employee_position_name like '%начальник%')
+		THEN
+			existing_head_id = get_head_by_department_id(new.department_id);
+			IF existing_head_id IS NOT NULL
+			THEN
+				RAISE EXCEPTION 'Multiple department head exception';
+				RETURN NULL;
+			ELSE
+				abstract_id = get_abstract_by_department_id(new.department_id);
+				update responsible_employee 
+				set
+					employee_id = new.id
+				where 
+					employee_id = abstract_id;
+			END IF;	
+		END IF;
+		
+	RETURN NEW;
+	END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER multiple_head_prevention_trig before insert ON employee
+    FOR EACH ROW EXECUTE FUNCTION multiple_head_prevention();
+
+CREATE OR REPLACE FUNCTION department_abstract_creation() RETURNS trigger AS $$
+	DECLARE  
+		abstract_position_id          integer;
+    BEGIN
+		abstract_position_id = (select id from employee_position where position_name like '%абстракт%');
+		insert into employee (position_id, department_id, employee_name, passport, current_status)
+		values
+		(abstract_position_id, new.id, new.abbrev, new.abbrev, 'актуальный');
+		
+		RETURN NEW;
+	END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER department_abstract_creation_trig after insert ON department
+    FOR EACH ROW EXECUTE FUNCTION department_abstract_creation();
+
+CREATE OR REPLACE FUNCTION position_update_delete_restriction() RETURNS trigger AS $$
+    BEGIN	
+		RAISE EXCEPTION 'Position data cannot be updated or deleted';
+		RETURN NULL;
+	END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER position_update_restriction_trig before update ON employee_position
+    FOR EACH ROW EXECUTE FUNCTION position_update_delete_restriction();
+CREATE TRIGGER position_delete_restriction_trig before delete ON employee_position
+    FOR EACH ROW EXECUTE FUNCTION position_update_delete_restriction();
+
+CREATE OR REPLACE FUNCTION abstract_update_delete_restriction() RETURNS trigger AS $$
+BEGIN	
+
+		IF 
+		(old.position_id = 1)
+		THEN
+		RAISE EXCEPTION 'Abstract of a department cannot be deleted or updated';
+		END IF;
+	return new;	
+	END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER abstract_delete_restriction_trig before delete ON employee
+    FOR EACH ROW EXECUTE FUNCTION abstract_update_delete_restriction();
+
+CREATE TRIGGER abstract_update_restriction_trig before update ON employee
+    FOR EACH ROW EXECUTE FUNCTION abstract_update_delete_restriction();
+	
+CREATE OR REPLACE FUNCTION department_update_delete_restriction() RETURNS trigger AS $$
+    BEGIN	
+		RAISE EXCEPTION 'Department data cannot be updated or deleted';
+		RETURN NULL;
+	END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER department_update_restriction_trig before update ON department
+    FOR EACH ROW EXECUTE FUNCTION department_update_delete_restriction();
+CREATE TRIGGER department_delete_restriction_trig before delete ON department
+    FOR EACH ROW EXECUTE FUNCTION department_update_delete_restriction();
+
+CREATE OR REPLACE FUNCTION article_update_delete_restriction() RETURNS trigger AS $$
+    BEGIN	
+		RAISE EXCEPTION 'Article data cannot be updated or deleted';
+		RETURN NULL;
+	END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER article_update_restriction_trig before update ON article
+    FOR EACH ROW EXECUTE FUNCTION article_update_delete_restriction();
+CREATE TRIGGER article_delete_restriction_trig before delete ON article
+    FOR EACH ROW EXECUTE FUNCTION article_update_delete_restriction();
+	
+CREATE OR REPLACE FUNCTION number_of_opened_cases_by_employee(target_employee_id integer) RETURNS integer AS $$
+    declare
+	res integer;
+	BEGIN
+		res = (select count(distinct case_id) from responsible_employee where employee_id = target_employee_id
+		and (select criminal_case.criminal_case_status 
+		from criminal_case where criminal_case.id = responsible_employee.case_id) = 'открыто');
+		return res;
+	END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION number_of_active_employees_by_department(target_department_id integer) RETURNS integer AS $$
+    declare
+	res integer;
+	BEGIN
+		res = (select count(*) from employee where department_id = target_department_id
+		and employee.current_status = 'актуальный' and employee.position_id != 1);
+		return res;
+	END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION suspect_rate_in_org(target_org_id integer) RETURNS real AS $$
+    DECLARE
+	suspect_num integer;
+	member_num integer;
+	BEGIN
+	
+	suspect_num = (select count(*) from membership where membership.organization_id = target_org_id and 
+	(select observed_person.cathegory from observed_person where observed_person.id = membership.person_id) != 'добропорядочный гражданин');
+	
+	member_num = (select count(*) from membership where membership.organization_id = target_org_id);
+	
+	return 1.0 * suspect_num/member_num;
+	END;
+$$ LANGUAGE plpgsql;
+
+create index organization_name on "organization" using hash("organization_name");
+
+create index case_name on "criminal_case" using hash("case_name");
+
+create index person_name on "observed_person" using hash("person_name");
+create index person_alias on "observed_person" using hash("person_alias");
+
+create index incident_timestamp on "incident" using btree("event_time");
+create index incident_type on "incident" using hash("event_type");
+
+create index evidence_storage on "evidence" using hash("evidence_storage");
+create index evidence_type on "evidence" using hash("evidence_type");
+create index evidence_case_relation on "evidence" using hash("case_id");
+
+create index activity_type on "activity" using hash("activity_type");
+
+create index article_code on "article" using hash("code");
+create index article_number on "article" using btree("article_number");
+
+insert into incident (event_time, place, event_type, description, access_lvl)
+values 
+('07-Sep-2022 08:58', 'СПб, станция метро Дыбенко', 'теракт', 'взрыв двух самодельных бомб', 1),
+('22-Oct-2022 18:00', 'СПб, площадь Восстания', 'несогласованный митинг', 'митинг против спецоперации, примерно 2 тыс. участников', 1),
+('11-May-2022 02:30', 'Ленинградская обл., окрестности пос. Лужки', 'контрабанда', 'контрабанда 215 литров толуола из Финляндии', 2);
+
+
+insert into observed_person (cathegory, person_alias, person_sex, citizenship, access_lvl)
+values 
+('в розыске', 'генсек', 'ж', 'Россия', 3);
+
+insert into observed_person (cathegory, person_name, person_alias, person_sex, citizenship, access_lvl)
+values 
+('в розыске', 'Андрей', 'котик', 'м', 'Россия', 2);
+
+insert into observed_person (cathegory, person_name, person_sex, citizenship, address, birth_date, person_location, access_lvl)
+values
+('подозреваемый', 'Богатов Александр', 'м', 'Россия', 'СПб, Белорусская ул., д.6', '07-Mar-2000', 'СПб, Арсенальная наб., д.7', 1);
+
+insert into observed_person (cathegory, person_name, person_alias, person_sex, citizenship, address, birth_date, person_location, access_lvl)
+values
+('заключенный', 'Газизов Анвар', 'татарин', 'м', 'Россия', 'СПб, Бассейная ул., д.38', '12-Mar-2002', 'СПб, ул. Коли Томчака, д.16', 2);
+
+insert into observed_person (cathegory, person_name, person_sex, citizenship, address, birth_date, person_location, access_lvl)
+values
+('член окружения', 'Тройникова Вероника', 'ж', 'Россия', 'СПб, Рыбацкая ул., д.4', '24-Dec-2001', 'СПб, Рыбацкая ул., д.4', 0);
+
+insert into observed_person (cathegory, person_name, person_sex, citizenship, access_lvl)
+values
+('добропорядочный гражданин', 'Васильев Владимир Николаевич', 'м', 'Россия', 0);
+
+
+insert into activity(activity_type, cathegory, description)
+values
+('организация несанкционированного митинга', 'незаконная', 'организация массового мероприятия (от 50 участников) в общественном месте без согласования с уполномоченными ведомствами'),
+('контрабанда', 'незаконная', 'нелегальный провоз химических реактивов через границу'),
+('изготовление взрывчатых веществ', 'незаконная', 'изготовление взрывчатки с целью дальнейшего использованя в теракте'),
+('организация теракта', 'незаконная', 'подготовка и проведение теракта');
+
+insert into activity(activity_type, cathegory, description)
+values
+('образовательная деятельность', 'законная', 'предоставление платных образовательных услуг');
+
+
+
+
+
+
+
+
+
+
+
+
+insert into criminal_case(case_name, description, criminal_case_status, access_lvl)
+values 
+('Взрыв бомб в метро Дыбенко','Взрыв двух самодельных бомб в метро Дыбенко утром в большом скоплении людей. Количество погибших: 24, пострадавших: 41. К терракту причастна группировка "Черная смерть".', 'открыто',1),
+('Митинг против спецоперации','Организация, проведение и участие в несогласованном митинге против спецоперации. Количество людей: 2000. К митингу причастна партия "Народная Воля".', 'открыто',1);
+
+
+
+
+
+
+
+
+
+
+
+insert into organization(leader_id, organization_name, access_lvl)
+values
+(1, 'Черная смерть', 2);
+
+insert into organization(leader_id, organization_name, address, access_lvl)
+values
+(3, 'Народная воля', 'СПб, Белорусская ул., д.6', 1);
+
+insert into organization(leader_id, organization_name, address, access_lvl)
+values
+(6, 'Корпорация ИТМО', 'СПб, Кронверкский пр., д.49', 0);
+
+
+insert into organization_activity
+values
+(1, 4),
+(2, 1);
+
+insert into organization_activity
+values
+(3, 5);
+
+
+insert into person_activity
+values
+(2, 2),
+(2, 3);
+
+
+insert into membership(organization_id, person_id, member_role)
+values
+(1, 1, 'лидер'),
+(1, 2, 'химик'),
+(1, 4, 'исполнитель теракта'),
+(2, 3, 'лидер');
+
+insert into membership(organization_id, person_id, member_role)
+values
+(3, 6, 'лидер');
+
+insert into membership(organization_id, person_id, member_role)
+values
+(3, 1, 'студент'),
+(3, 2, 'студент'),
+(3, 3, 'студент'),
+(3, 4, 'бывший студент (отчислен)'),
+(3, 5, 'студент');
+
+
+
+insert into employee_position(position_name, responsibilities, qualification, access_lvl)
+values
+('абстракт', '', '', 4),
+('начальник отдела', 'осуществляет: планирование мероприятий по правовому обеспечению служебной деятельности в отделе; установка полномочий и ответственности должностных лиц отдела; осуществление координации работы в отделе; взаимодействие в вопросах правовой работы с органами государственной власти; осуществление контроля за состоянием правовой работы в отделе', 'иметь водительские права, иметь хорошую физиологическую и психологическую форму; быть совершеннолетним; быть гражданином страны; не иметь судимости; не быть связанным с экстремистской/террористической деятельностью; иметь опыт работы в отделах тайной полиции', 4),
+('спец. агент', 'осуществляет: расследование криминальные угроз и борьба с ними, сбор и анализ информации, взятие интервью у подозреваемых иностранных агентов и участие в тайных заданиях', 'иметь водительские права, иметь хорошую физиологическую и психологическую форму; быть совершеннолетним; быть гражданином страны; не иметь судимости; не быть связанным с экстремистской/террористической деятельностью; иметь опыт работы в отделах тайной полиции', 4),
+('гражданский агент', 'осуществляет: подчинение сотрудникам выше по званию; охрана мест преступлений; сбор информации о подозреваемых гражданах и организациях', 'быть совершеннолетним; не иметь проблем с психическим здоровьем, алкогольной или наркотической зависимости; быть гражданином страны и не иметь иного гражданства; не находиться под следствием по подозрению в совершении уголовного преступления; не иметь судимости; не быть связанным с экстремистской/террористической деятельностью', 0),
+('младший оперуполномоченный', 'осуществляющет: оперативно-розыскная деятельность и сопровождающее предупреждение; пресечение и раскрытие преступлений негласными методами, розыск лиц, скрывшихся от органов дознания, следствия и суда, агентурно-оперативную работу', 'иметь водительские права, иметь хорошую физиологическую и психологическую форму; быть совершеннолетним; быть гражданином страны; не иметь судимости; не быть связанным с экстремистской/террористической деятельностью', 1),
+('оперуполномоченный', 'осуществляющет оперативно-розыскная деятельность и сопровождающее предупреждение, пресечение и раскрытие преступлений негласными методами, розыск лиц, скрывшихся от органов дознания, следствия и суда, агентурно-оперативную работу', 'иметь водительские права, иметь хорошую физиологическую и психологическую форму; быть совершеннолетним; быть гражданином страны; не иметь судимости; не быть связанным с экстремистской/террористической деятельностью', 2),
+('старший оперуполномоченный', 'осуществляющет оперативно-розыскная деятельность и сопровождающее предупреждение, пресечение и раскрытие преступлений негласными методами, розыск лиц, скрывшихся от органов дознания, следствия и суда, агентурно-оперативную работу', 'иметь водительские права, иметь хорошую физиологическую и психологическую форму; быть совершеннолетним; быть гражданином страны; не иметь судимости; не быть связанным с экстремистской/террористической деятельностью', 3),
+('младший дознаватель', 'осуществляющет: проведение расследования в форме дознания; по окончании расследования составляется обвинительный акт', '', 1),
+('дознаватель', 'осуществляющет: проведение расследования в форме дознания; по окончании расследования составляется обвинительный акт', '', 2),
+('старший дознаватель', 'осуществляющет: проведение расследования в форме дознания; по окончании расследования составляется обвинительный акт', '', 3),
+('младший агент', 'осуществляющет: сбор доказательств преступной и шпионской деятельности; поддержание сотрудников в преследовании преступников; изучение деловых записей; оформление ордеров на обыск; работа под прикрытием; выявление и мониторинг организованных преступных группировок; расследование коррупции в обществе', 'иметь водительские права, иметь хорошую физиологическую и психологическую форму; быть совершеннолетним; быть гражданином страны; не иметь судимости; не быть связанным с экстремистской/террористической деятельностью', 1),
+('агент', 'осуществляющет: сбор доказательств преступной и шпионской деятельности; поддержание сотрудников в преследовании преступников; изучение деловых записей; оформление ордеров на обыск; работа под прикрытием; выявление и мониторинг организованных преступных группировок; расследование коррупции в обществе', 'иметь водительские права, иметь хорошую физиологическую и психологическую форму; быть совершеннолетним; быть гражданином страны; не иметь судимости; не быть связанным с экстремистской/террористической деятельностью', 2),
+('старший агент', 'осуществляющет: сбор доказательств преступной и шпионской деятельности; поддержание сотрудников в преследовании преступников; изучение деловых записей; оформление ордеров на обыск; работа под прикрытием; выявление и мониторинг организованных преступных группировок; расследование коррупции в обществе', 'иметь водительские права, иметь хорошую физиологическую и психологическую форму; быть совершеннолетним; быть гражданином страны; не иметь судимости; не быть связанным с экстремистской/террористической деятельностью', 3),
+('младший детектив', 'осуществляющет: сбор сведений о гражданах, организациях; выяснение биографических и других характеризующих личность данных об отдельных гражданах; поиск без вести пропавших граждан; поиск улик по уголовным делам; сбор сведений по уголовным делам', 'иметь водительские права, иметь хорошую физиологическую и психологическую форму; быть совершеннолетним; быть гражданином страны; не иметь судимости; не быть связанным с экстремистской/террористической деятельностью', 1),
+('детектив', 'осуществляющет: сбор сведений о гражданах, организациях; выяснение биографических и других характеризующих личность данных об отдельных гражданах; поиск без вести пропавших граждан; поиск улик по уголовным делам; сбор сведений по уголовным делам', 'иметь водительские права, иметь хорошую физиологическую и психологическую форму; быть совершеннолетним; быть гражданином страны; не иметь судимости; не быть связанным с экстремистской/террористической деятельностью', 2),
+('старший детектив', 'осуществляющет: сбор сведений о гражданах, организациях; выяснение биографических и других характеризующих личность данных об отдельных гражданах; поиск без вести пропавших граждан; поиск улик по уголовным делам; сбор сведений по уголовным делам', 'иметь водительские права, иметь хорошую физиологическую и психологическую форму; быть совершеннолетним; быть гражданином страны; не иметь судимости; не быть связанным с экстремистской/террористической деятельностью', 3),
+('младший следователь', 'осуществляющет: возбуждение уголовного дела в установленном законом порядке; направление хода расследования, принятие решений о производстве следственных и иных процессуальных действий; дача обязательных для исполнения письменных поручений о проведении оперативно-розыскных мероприятий; производство отдельных следственных действий, об исполнении постановлений о задержании, приводе, об аресте, о производстве иных процессуальных действий, а также получать содействие при их осуществлении', 'иметь водительские права, иметь хорошую физиологическую и психологическую форму; быть совершеннолетним; быть гражданином страны; не иметь судимости; не быть связанным с экстремистской/террористической деятельностью', 1),
+('следователь', 'осуществляющет: возбуждение уголовного дела в установленном законом порядке; направление хода расследования, принятие решений о производстве следственных и иных процессуальных действий; дача обязательных для исполнения письменных поручений о проведении оперативно-розыскных мероприятий; производство отдельных следственных действий, об исполнении постановлений о задержании, приводе, об аресте, о производстве иных процессуальных действий, а также получать содействие при их осуществлении', 'иметь водительские права, иметь хорошую физиологическую и психологическую форму; быть совершеннолетним; быть гражданином страны; не иметь судимости; не быть связанным с экстремистской/террористической деятельностью', 2),
+('старший следователь', 'осуществляющет: возбуждение уголовного дела в установленном законом порядке; направление хода расследования, принятие решений о производстве следственных и иных процессуальных действий; дача обязательных для исполнения письменных поручений о проведении оперативно-розыскных мероприятий; производство отдельных следственных действий, об исполнении постановлений о задержании, приводе, об аресте, о производстве иных процессуальных действий, а также получать содействие при их осуществлении', 'иметь водительские права, иметь хорошую физиологическую и психологическую форму; быть совершеннолетним; быть гражданином страны; не иметь судимости; не быть связанным с экстремистской/террористической деятельностью', 3),
+('младший инспектор', 'осуществляющет: проверка того, как работники соблюдают требования законодательства и нормативно-правовые акты; проверка состояния материальных, либо финансовых ресурсов; участие в комиссиях по расследованию инцидентов на производстве', 'иметь водительские права, иметь хорошую физиологическую и психологическую форму; быть совершеннолетним; быть гражданином страны; не иметь судимости; не быть связанным с экстремистской/террористической деятельностью', 1),
+('инспектор', 'осуществляющет: проверка того, как работники соблюдают требования законодательства и нормативно-правовые акты; проверка состояния материальных, либо финансовых ресурсов; участие в комиссиях по расследованию инцидентов на производстве', 'иметь водительские права, иметь хорошую физиологическую и психологическую форму; быть совершеннолетним; быть гражданином страны; не иметь судимости; не быть связанным с экстремистской/террористической деятельностью', 2),
+('старший инспектор', 'осуществляющет: проверка того, как работники соблюдают требования законодательства и нормативно-правовые акты; проверка состояния материальных, либо финансовых ресурсов; участие в комиссиях по расследованию инцидентов на производстве', 'иметь водительские права, иметь хорошую физиологическую и психологическую форму; быть совершеннолетним; быть гражданином страны; не иметь судимости; не быть связанным с экстремистской/террористической деятельностью', 3);
+
+
+
+
+insert into department(abbrev,department_name, description)
+values
+('ОБН','Отдел по борьбе с наркотиками','Отдел по борьбе с наркотрафиком внутри страны: противодействие производству, распространению, хранению и потреблению наркотических веществ.'),
+('СО','Следственный Отдел','Отдел по расследованию наиболее сложных уголовных дел, относящихся к подследственности следователей органов внутренних дел.'),
+('ОБТ','Отдел по борьбе с терроризмом','Отдел по выявлению лиц, подготавливающих, совершающих или совершивших преступления террористического характера, а также по сбору информации о лицах, причастных к терратистической деятельности'),
+('ОГБ','Отдел государственной безопасности','Отдел по предотвращению проникновения в службу тайной полиции лиц, преследующих противоправные цели.'),
+('ОБЭ','Отдел по борьбе с экстримизмом','Отдел по охране политических устоев, борьбе с противоправительственными силами, экстримистами.'); 
+
+
+insert into evidence(case_id, evidence_type, description, evidence_storage, access_lvl)
+values 
+(1,'иные документы','Показания члена окружения - свидетеля: Тройникова Вероника. Аудиозапись с информацией о причастности подозреваемого к нарушению статьи','Хранилище улик ОБT', 1),
+(1,'заключение эксперта','Заключение лаборатории об устройстве и составе взрывчатого устройства','Хранилище улик ОБТ', 2),
+(2,'показания свидетеля','Показания прохожего: Василия Николаева. Видеозапись с информацией о событии - митинга','Хранилище улик ОБЭ', 1),
+(2,'показания обвиняемого','Показания обвиняемого: Александра Богатова. Видеозапись о причастности к организации, проведения и участию в несогласованном митинге','Хранилище улик ОБЭ', 1),
+(1,'вещественные доказательства','Фото и видео о причинении ущерба государственной инфроструктуре, массовом убийстве и причинении тяжкого вреда здоровью','Хранилище улик ОБТ', 1),
+(1,'вещественные доказательства','Запись с камер видеонаблюдения метро: информация о местонахождении обвиняемого, Анвара Газизова, у места взрыва','Хранилище улик ОБТ', 1),
+(2,'вещественные доказательства','Фото и видео митинга','Хранилище улик ОБЭ', 0),
+(1,'показания потерпевшего','Показания свидетеля-потерпевшего: Аудио с информацией о местонахождении обвиняемого в месте взрыва','Хранилище улик ОБТ', 1);
+
+
+insert into person_case_participant(person_id, case_id)
+values 
+(1,1),
+(2,1),
+(3,2),
+(4,1);
+
+insert into person_case_witness(person_id, case_id)
+values 
+(5,1);
+
+insert into organization_case_participant(organization_id, case_id)
+values
+(1,1),
+(2,2);
+
+insert into case_related_incident(incident_id, case_id)
+values
+(1,1),
+(2,2),
+(3,1);
+
+insert into employee(position_id, department_id, employee_name, passport, current_status)
+values
+(2,3,'Виталий Кийко', '1234 2345 3456 5687', 'актуальный'),
+(18,3,'Владимир Романов', '2345 0980 9867 2554', 'актуальный'),
+(15,3,'Нгуен Нгок Дык', '2455 0798 2587 2039', 'актуальный'),
+(2,5,'Кирилл Иевлев', '3954 0988 2345 8349', 'актуальный'),
+(19,5,'Юлия Сюр', '3450 2340 4385 2342', 'актуальный'),
+(12,5,'Полина Прокушева', '3458 9823 0954 2349', 'актуальный'),
+(2,1,'Филипп Киркоров', '8549 0345 9098 3405', 'актуальный'),
+(2,2,'Михаил Федоров', '5093 4952 0945 9072', 'актуальный'),
+(2,4,'Артем Емельянов', '8238 5649 5827 0345', 'актуальный');
+
+
+
+
+insert into article(department_id, code, article_number, description)
+values
+(3, 205, 1, 'Террористический акт: Совершение взрыва, поджога или иных действий, устрашающих население и создающих опасность гибели человека, причинения значительного имущественного ущерба либо наступления иных тяжких последствий, в целях дестабилизации деятельности органов власти или международных организаций либо воздействия на принятие ими решений, а также угроза совершения указанных действий в целях воздействия на принятие решений органами власти или международными организациями наказывается лишением свободы на срок от десяти до пятнадцати лет.'),
+(3, 205, 2, 'Террористический акт: Те же деяния: а) совершенные группой лиц по предварительному сговору или организованной группой; б) повлекшие по неосторожности смерть человека; в) повлекшие причинение значительного имущественного ущерба либо наступление иных тяжких последствий, - наказываются лишением свободы на срок от двенадцати до двадцати лет с ограничением свободы на срок от одного года до двух лет.'),
+(3, 205, 3, 'Террористический акт: Деяния, предусмотренные частями первой или второй настоящей статьи, если они: а) сопряжены с посягательством на объекты использования атомной энергии либо с использованием ядерных материалов, радиоактивных веществ или источников радиоактивного излучения либо ядовитых, отравляющих, токсичных, опасных химических или биологических веществ; б) повлекли умышленное причинение смерти человеку, - наказываются лишением свободы на срок от пятнадцати до двадцати лет с ограничением свободы на срок от одного года до двух лет или пожизненным лишением свободы.'),
+(5, 280, 1, 'Публичные призывы к осуществлению экстремистской деятельности: Публичные призывы к осуществлению экстремистской деятельности - наказываются штрафом в размере от ста тысяч до трехсот тысяч рублей или в размере заработной платы или иного дохода осужденного за период от одного года до двух лет, либо принудительными работами на срок до трех лет, либо арестом на срок от четырех до шести месяцев, либо лишением свободы на срок до четырех лет с лишением права занимать определенные должности или заниматься определенной деятельностью на тот же срок.'),
+(5, 280, 2, 'Публичные призывы к осуществлению экстремистской деятельности: Те же деяния, совершенные с использованием средств массовой информации либо информационно-телекоммуникационных сетей, в том числе сети "Интернет", - наказываются принудительными работами на срок до пяти лет с лишением права занимать определенные должности или заниматься определенной деятельностью на срок до трех лет или без такового либо лишением свободы на срок до пяти лет с лишением права занимать определенные должности или заниматься определенной деятельностью на срок до трех лет.'),
+(3, 223, 1, 'Незаконное изготовление взрывчатых веществ: 1. Незаконное изготовление взрывчатых веществ, а равно незаконные изготовление, переделка или ремонт взрывных устройств - наказывается лишением свободы на срок от восьми до десяти лет со штрафом в размере от двухсот тысяч до пятисот тысяч рублей или в размере заработной платы или иного дохода осужденного за период от одного года до двух лет.');
+
+
+insert into court_charges(article_id, case_id)
+values
+(1,1),
+(2,1),
+(3,1),
+(4,2),
+(6,1);
+
+
+
+insert into responsible_employee(employee_id, case_id)
+values
+(7,1),
+(10,2);
+
+
+insert into employee(position_id, department_id, employee_name, passport, current_status)
+values
+(17,3,'Сержио Клименкофф', '1234 2345 3456 5689', 'актуальный');

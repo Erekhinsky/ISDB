@@ -1,0 +1,20 @@
+create index organization_name on "organization" using hash("organization_name");
+
+create index case_name on "criminal_case" using hash("case_name");
+
+create index person_name on "observed_person" using hash("person_name");
+create index person_alias on "observed_person" using hash("person_alias");
+
+create index incident_timestamp on "incident" using btree("event_time");
+create index incident_type on "incident" using hash("event_type");
+
+create index evidence_storage on "evidence" using hash("evidence_storage");
+create index evidence_type on "evidence" using hash("evidence_type");
+create index evidence_case_relation on "evidence" using hash("case_id");
+
+create index activity_type on "activity" using hash("activity_type");
+
+create index article_code on "article" using hash("code");
+create index article_number on "article" using btree("article_number");
+
+
